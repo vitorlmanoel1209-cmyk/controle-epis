@@ -481,10 +481,31 @@
       aplicarUnidadeSelecionada();
     }
 
-    function carregarDadosUnidadeAtiva() {
+    async function carregarDadosUnidadeAtiva() {
       if (!db || !unidadeSelecionada) return;
       limparListenersUnidade();
       const u = getUnidadeAtiva();
+
+      if (u === '101') {
+        try {
+          const snap101 = await db.ref('unidades/101').once('value');
+          const d101 = snap101.val();
+          if (!d101 || (!d101.itensEstoque && !d101.movimentacoes && !d101.itensForaEstoque)) {
+            const snapAntigo = await db.ref('projeto_epis').once('value');
+            const antigo = snapAntigo.val();
+            if (antigo) {
+              await db.ref('unidades/101').set({
+                itensEstoque: antigo.itensEstoque || BASE_COMPLETA_OFICIAL,
+                movimentacoes: antigo.movimentacoes || [],
+                itensForaEstoque: antigo.itensForaEstoque || [],
+                ajustesInventario: antigo.ajustesInventario || {}
+              });
+            }
+          }
+        } catch (e) {
+          console.warn('Auto-migração 101:', e);
+        }
+      }
 
       if (u === 'todas') {
         const rootRef = db.ref('unidades');
@@ -654,11 +675,14 @@
       if (tabId === 'tab-fora-estoque') renderizarForaEstoque();
     }
 
-    function getSaldoFisico(codigo) {
-      const item = itensEstoque.find(i => i.codigo === codigo);
+    function getSaldoFisico(codigo, unitId = '') {
+      const item = itensEstoque.find(i => i.codigo === codigo && (!unitId || i._unitId === unitId));
       if (!item) return 0;
-      const pendentes = movimentacoes.filter(m => m.codigo === codigo && m.status === 'Pendente').reduce((sum, m) => sum + Number(m.quantidade), 0);
-      const ajuste = (ajustesInventario[codigo] && ajustesInventario[codigo].delta) ? ajustesInventario[codigo].delta : 0;
+      const pendentes = movimentacoes
+        .filter(m => m.codigo === codigo && m.status === 'Pendente' && (!unitId || m._unitId === unitId))
+        .reduce((sum, m) => sum + Number(m.quantidade), 0);
+      const ajObj = unitId ? (ajustesInventario[`${unitId}:${codigo}`] || ajustesInventario[codigo]) : ajustesInventario[codigo];
+      const ajuste = (ajObj && ajObj.delta) ? ajObj.delta : 0;
       return item.saldo_totvs + ajuste - pendentes;
     }
 
@@ -772,7 +796,7 @@
 
         return `
           <tr>
-            <td>${f.data}</td>
+            <td>${f._unitId ? `<span class="unit-pill">${escaparHtml(f._unitId)}</span>` : ''}${f.data}</td>
             <td>
               <strong>${f.codigo}</strong><br/>
               <span style="font-size:0.8rem; color:var(--text-muted);">${f.descricao}</span>
@@ -955,7 +979,7 @@
       } else {
         tbody.innerHTML = pendentes.map(m => `
           <tr>
-            <td>${m.data}</td>
+            <td>${m._unitId ? `<span class="unit-pill">${escaparHtml(m._unitId)}</span>` : ''}${m.data}</td>
             <td><strong>${m.codigo}</strong></td>
             <td>${m.descricao}</td>
             <td>${m.colaborador}</td>
@@ -974,7 +998,7 @@
 
       tbodyHist.innerHTML = baixados.map(m => `
         <tr>
-          <td>${m.data}</td>
+          <td>${m._unitId ? `<span class="unit-pill">${escaparHtml(m._unitId)}</span>` : ''}${m.data}</td>
           <td>${m.codigo}</td>
           <td>${m.descricao}</td>
           <td>${m.colaborador}</td>
@@ -1071,13 +1095,14 @@
       const filtro = document.getElementById("filtro-estoque").value.toLowerCase();
       const filtrados = itensEstoque.filter(i => (i.codigo && i.codigo.toLowerCase().includes(filtro)) || (i.descricao && i.descricao.toLowerCase().includes(filtro)));
       tbody.innerHTML = filtrados.map(item => {
-        const pendentes = movimentacoes.filter(m => m.codigo === item.codigo && m.status === 'Pendente').reduce((sum, m) => sum + Number(m.quantidade), 0);
-        const saldoFisico = getSaldoFisico(item.codigo);
+        const uItem = item._unitId || '';
+        const pendentes = movimentacoes.filter(m => m.codigo === item.codigo && m.status === 'Pendente' && (!uItem || m._unitId === uItem)).reduce((sum, m) => sum + Number(m.quantidade), 0);
+        const saldoFisico = getSaldoFisico(item.codigo, uItem);
         let badge = '<span class="status-badge status-baixado">🟢 Regular</span>';
         if (saldoFisico <= 0) badge = '<span class="status-badge status-critico">🔴 Zerado</span>';
         else if (saldoFisico <= 5) badge = '<span class="status-badge status-pendente">🟡 Baixo</span>';
         return `<tr>
-          <td><strong>${item.codigo}</strong></td>
+          <td>${uItem ? `<span class="unit-pill">${escaparHtml(uItem)}</span>` : ''}<strong>${item.codigo}</strong></td>
           <td>${item.descricao}</td>
           <td>${item.un}</td>
           <td>${item.saldo_totvs}</td>
